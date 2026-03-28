@@ -37,11 +37,13 @@ const DriverDashboard = () => {
 
   const fetchDriverDetails = async () => {
     try {
-      const response = await driverAPI.getDashboard(); // Adjust this if your exact API call is named differently
-      setBus(response.data.bus);
-      setCurrentRoute(response.data.route);
-      setIsActive(response.data.bus?.isActive || false);
-      setAvailableSeats(response.data.bus?.availableSeats || 0);
+      const response = await driverAPI.getMyBus();
+      const busData = response.data;
+
+      setBus(busData);
+      setCurrentRoute(busData?.routeId || null);
+      setIsActive(busData?.isActive || false);
+      setAvailableSeats(busData?.availableSeats ?? 0);
     } catch (error) {
       console.error('Error fetching driver details:', error);
     } finally {
@@ -53,9 +55,18 @@ const DriverDashboard = () => {
   const startRealTrip = async () => {
     try {
       // 1. Tell the backend the bus is active
-      await driverAPI.updateStatus({ isActive: true });
+      const response = await driverAPI.startTrip();
+      const updatedBus = response.data?.bus || bus;
+      const activeBusId = updatedBus?._id;
+
+      if (!activeBusId) {
+        console.error('Cannot start trip: bus not found.');
+        return;
+      }
+
+      setBus(updatedBus);
       setIsActive(true);
-      socketService.emit('busStatusChanged', { busId: bus._id, isActive: true });
+      socketService.emitTripStarted(activeBusId);
 
       // 2. Start streaming real GPS coordinates from the phone hardware
       watchIdRef.current = navigator.geolocation.watchPosition(
@@ -63,8 +74,8 @@ const DriverDashboard = () => {
           const currentLat = position.coords.latitude;
           const currentLng = position.coords.longitude;
 
-          socketService.emit('updateLocation', {
-            busId: bus._id,
+          socketService.sendLocation({
+            busId: activeBusId,
             lat: currentLat,
             lng: currentLng,
             availableSeats: availableSeats
@@ -94,9 +105,18 @@ const DriverDashboard = () => {
 
     try {
       // 1. Set bus to active
-      await driverAPI.updateStatus({ isActive: true });
+      const response = await driverAPI.startTrip();
+      const updatedBus = response.data?.bus || bus;
+      const activeBusId = updatedBus?._id;
+
+      if (!activeBusId) {
+        console.error('Cannot simulate trip: bus not found.');
+        return;
+      }
+
+      setBus(updatedBus);
       setIsActive(true);
-      socketService.emit('busStatusChanged', { busId: bus._id, isActive: true });
+      socketService.emitTripStarted(activeBusId);
 
       // 2. Ask Google for the exact road path
       const directionsService = new window.google.maps.DirectionsService();
@@ -134,8 +154,8 @@ const DriverDashboard = () => {
 
         const currentPosition = roadPath[currentIndex];
         
-        socketService.emit('updateLocation', {
-          busId: bus._id,
+        socketService.sendLocation({
+          busId: activeBusId,
           lat: currentPosition.lat(),
           lng: currentPosition.lng(),
           availableSeats: availableSeats
@@ -156,9 +176,14 @@ const DriverDashboard = () => {
   const endTrip = async () => {
     try {
       // Update backend
-      await driverAPI.updateStatus({ isActive: false });
+      const response = await driverAPI.stopTrip();
+      const updatedBus = response.data?.bus || bus;
+
+      setBus(updatedBus);
       setIsActive(false);
-      socketService.emit('busStatusChanged', { busId: bus._id, isActive: false });
+      if (updatedBus?._id) {
+        socketService.emitTripStopped(updatedBus._id);
+      }
 
       // Stop real GPS
       if (watchIdRef.current) {
@@ -177,10 +202,19 @@ const DriverDashboard = () => {
   };
 
   const handleSeatUpdate = async (change) => {
+    if (!bus) return;
+
+    const previousSeats = availableSeats;
     const newSeats = Math.max(0, Math.min(availableSeats + change, bus.totalSeats));
     setAvailableSeats(newSeats);
-    
-    // Note: If you have a specific driverAPI.updateSeats(newSeats) endpoint, call it here
+
+    try {
+      await driverAPI.updateSeats(newSeats);
+      setBus(prev => (prev ? { ...prev, availableSeats: newSeats } : prev));
+    } catch (error) {
+      console.error('Error updating seats:', error);
+      setAvailableSeats(previousSeats);
+    }
   };
 
   if (loading) return <div className="flex justify-center items-center h-screen">Loading Driver Dashboard...</div>;
