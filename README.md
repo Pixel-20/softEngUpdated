@@ -295,6 +295,3 @@ npm run build
 # Serve dist/ folder
 ```
 
-## License
-
-MIT
